@@ -1,0 +1,15 @@
+```yaml
+# filepath: /c:/Users/hp/VSCode_projects/bidding_strategy/configs/config.yaml
+click_class_weight: 10
+conversion_class_weight: 10
+click_num_leaves: 31
+conversion_num_leaves: 31
+click_n_estimators: 500
+conversion_n_estimators: 500
+random_state: 42
+correlation_threshold: 0.8
+missing_drop_threshold: 0.8
+high_cardinality_threshold: 100
+missing_value_strategy: "median"
+scaling_method: "standard"
+```
