@@ -1,8 +1,7 @@
 # External imports
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder, StandardScaler, MinMaxScaler
-from category_encoders import TargetEncoder
+from sklearn.preprocessing import LabelEncoder
 
 # Internal imports
 from logger.logging import getLogger
@@ -194,13 +193,30 @@ class DataPreprocessor:
 
             if n_unique > self.high_cardinality_threshold:
                 if col in ["city", "device_model", "bundle_identifier"]:
-                    # Target encoding for high-cardinality features
+                    # Custom mean target encoding for high-cardinality features
                     if target_col is not None:
-                        encoder = TargetEncoder()
-                        data_copy[f"{col}_encoded"] = encoder.fit_transform(
-                            data_copy[col], data_copy[target_col]
-                        )
-                        self.target_encoders[col] = encoder
+                        # Calculate the global mean of the target
+                        global_mean = data_copy[target_col].mean()
+
+                        # Calculate the mean of the target for each category
+                        category_means = data_copy.groupby(col)[target_col].mean()
+
+                        # Calculate counts for each category for smoothing
+                        category_counts = data_copy[col].value_counts()
+
+                        # Add smoothing to reduce overfitting (especially for categories with few samples)
+                        # Higher smoothing_factor means more regularization toward the global mean
+                        smoothing_factor = 10
+                        smooth_means = (
+                            category_counts * category_means
+                            + smoothing_factor * global_mean
+                        ) / (category_counts + smoothing_factor)
+
+                        # Apply the encoding
+                        data_copy[f"{col}_encoded"] = data_copy[col].map(smooth_means)
+
+                        # Store the encoding mapping for future transformations
+                        self.target_encoders[col] = smooth_means
                 elif col in ["creative_id", "supplier_id"]:
                     # Frequency encoding
                     freq_map = data_copy[col].value_counts(normalize=True)
@@ -215,39 +231,10 @@ class DataPreprocessor:
         logger.info("Encoded categorical features.")
         return data_copy
 
-    def scale_numerical_features(self, data: pd.DataFrame) -> pd.DataFrame:
-        """
-        Scale numerical features using the specified scaling method.
-
-        Parameters
-        ----------
-        data : pd.DataFrame
-            The input data.
-
-        Returns
-        -------
-        pd.DataFrame
-            The data with numerical features scaled.
-        """
-        # Make a copy of the data
-        data_copy = data.copy()
-        numerical_cols = data_copy.select_dtypes(include=["int64", "float64"]).columns
-        # Scale numerical features
-        if self.scaling_method == "standard":
-            scaler = StandardScaler()
-            data_copy[numerical_cols] = scaler.fit_transform(data_copy[numerical_cols])
-            self.scalers["standard"] = scaler
-        elif self.scaling_method == "minmax":
-            scaler = MinMaxScaler()
-            data_copy[numerical_cols] = scaler.fit_transform(data_copy[numerical_cols])
-            self.scalers["minmax"] = scaler
-
-        logger.info(f"Scaled numerical features using {self.scaling_method} scaling.")
-        return data_copy
-
     def transform(self, data: pd.DataFrame) -> pd.DataFrame:
         """
         Apply saved encodings and scalings to new data.
+        Updated to work with the custom mean target encoding.
 
         Parameters
         ----------
@@ -261,15 +248,30 @@ class DataPreprocessor:
         """
         # Make a copy of the data
         data_copy = data.copy()
-        # Target encoding
-        for col, encoder in self.target_encoders.items():
-            data_copy[f"{col}_encoded"] = encoder.transform(data_copy[col])
+
+        # Target encoding (using stored means instead of TargetEncoder)
+        for col, encoding_map in self.target_encoders.items():
+            # Apply the encoding and handle unseen categories by using the global mean
+            global_mean = encoding_map.mean()  # This is approximate global mean
+            data_copy[f"{col}_encoded"] = (
+                data_copy[col].map(encoding_map).fillna(global_mean)
+            )
+
         # Frequency encoding
         for col, freq_map in self.cardinality_maps.items():
-            data_copy[f"{col}_freq"] = data_copy[col].map(freq_map)
+            data_copy[f"{col}_freq"] = (
+                data_copy[col].map(freq_map).fillna(0)
+            )  # For unseen categories
+
         # Label encoding
         for col, encoder in self.label_encoders.items():
-            data_copy[f"{col}_encoded"] = encoder.transform(data_copy[col])
+            # Handle unseen categories in transform
+            known_categories = set(encoder.classes_)
+            data_copy[f"{col}_encoded"] = data_copy[col].apply(
+                lambda x: encoder.transform([x])[0] if x in known_categories else -1
+            )
+
+        # Apply scaling
         if self.scaling_method == "standard":
             data_copy[list(self.scalers["standard"].feature_names_in_)] = self.scalers[
                 "standard"
@@ -313,7 +315,8 @@ class FeatureEngineer:
     def __init__(self):
         pass
 
-    def create_temporal_features(self, data: pd.DataFrame) -> pd.DataFrame:
+    @staticmethod
+    def create_temporal_features(data: pd.DataFrame) -> pd.DataFrame:
         """
         Create temporal features from timestamp columns.
 
@@ -352,7 +355,8 @@ class FeatureEngineer:
         logger.info("Created temporal features.")
         return data_copy
 
-    def create_activity_ratios(self, data: pd.DataFrame) -> pd.DataFrame:
+    @staticmethod
+    def create_activity_ratios(data: pd.DataFrame) -> pd.DataFrame:
         """
         Calculate activity ratios from impression and click data.
 
